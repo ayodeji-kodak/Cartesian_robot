@@ -10,12 +10,12 @@ from inference_sdk import InferenceHTTPClient
 
 CONFIDENCE = 0.80
 
-IMAGE_PATH = "zazu.png"
+IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
 OUTPUT_PATH = "tank_detection_result.png"
 
-API_KEY = "YOUR_ROBOFLOW_API_KEY"
+API_KEY = "iLcT6T8QR9NJT0eh7zbz"
 
-TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-instant-1"
+TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
 
 # ==========================================================
 # CONNECT TO ROBOFLOW
