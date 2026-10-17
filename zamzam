@@ -1,0 +1,298 @@
+
+import cv2
+import time
+import os
+
+from inference_sdk import InferenceHTTPClient
+
+# ==========================================================
+# SETTINGS
+# ==========================================================
+
+CONFIDENCE = 0.80
+
+IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
+OUTPUT_PATH = "tank_detection_result.png"
+
+API_KEY = "iLcT6T8QR9NJT0eh7zbz"
+
+TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
+HATCH_MODEL_ID = "ayodeji-oyelakin/hatch-detection-5-rfdetr-medium-t1"
+KEYPOINT_MODEL_ID = "ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1"
+
+
+# ==========================================================
+# CONNECT TO ROBOFLOW
+# ==========================================================
+
+client = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key=API_KEY
+)
+
+def detect(image, model_id):
+    """Run a Roboflow model on an image."""
+    if image is None or image.size == 0:
+        return {"predictions": []}
+
+    return client.infer(image, model_id=model_id)
+
+def get_box(prediction, image_shape):
+    """Convert Roboflow box centre and size to corner coordinates."""
+    height, width = image_shape[:2]
+
+    cx = prediction["x"]
+    cy = prediction["y"]
+    box_width = prediction["width"]
+    box_height = prediction["height"]
+
+    x1 = max(0, int(cx - box_width / 2))
+    y1 = max(0, int(cy - box_height / 2))
+    x2 = min(width, int(cx + box_width / 2))
+    y2 = min(height, int(cy + box_height / 2))
+
+    return x1, y1, x2, y2
+
+# ==========================================================
+# LOAD IMAGE
+# ==========================================================
+
+image = cv2.imread(IMAGE_PATH)
+
+if image is None:
+    raise FileNotFoundError(
+        f"Could not load image: {IMAGE_PATH}"
+    )
+
+output = image.copy()
+start = time.perf_counter()
+
+tank_count = 0
+hatch_count = 0
+keypoint_requests = 0
+
+# Stores the complete raw response for every hatch crop.
+raw_keypoint_data = {
+    "image_path": IMAGE_PATH,
+    "timestamp": datetime.now().isoformat(),
+    "keypoint_model_id": KEYPOINT_MODEL_ID,
+    "confidence_threshold": CONFIDENCE,
+    "responses": []
+}
+
+# ==========================================================
+# STAGE 1: DETECT TANK
+# ==========================================================
+
+print("\n================================")
+print("STAGE 1: TANK DETECTION")
+print("================================")
+
+tank_results = detect(image, TANK_MODEL_ID)
+
+print("\nRaw tank response:")
+print(json.dumps(tank_results, indent=2, default=str))
+
+for tank_index, tank in enumerate(
+    tank_results.get("predictions", [])
+):
+
+    tank_conf = tank.get("confidence", 0)
+
+    if tank_conf < CONFIDENCE:
+        continue
+
+    tx1, ty1, tx2, ty2 = get_box(tank, image.shape)
+
+    if tx2 <= tx1 or ty2 <= ty1:
+        continue
+
+    tank_count += 1
+
+    # Crop tank from original image.
+    tank_crop = image[ty1:ty2, tx1:tx2]
+
+    # Draw tank box in GREEN.
+    cv2.rectangle(
+        output,
+        (tx1, ty1),
+        (tx2, ty2),
+        (0, 255, 0),
+        2
+    )
+
+    cv2.putText(
+        output,
+        f"Tank {tank_conf:.2f}",
+        (tx1, max(25, ty1 - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2
+    )
+
+    print(
+        f"\nTank {tank_index}: "
+        f"confidence={tank_conf:.3f}, "
+        f"box=({tx1}, {ty1}, {tx2}, {ty2})"
+    )
+
+    # ======================================================
+    # STAGE 2: DETECT HATCH INSIDE TANK
+    # ======================================================
+
+    print("\n================================")
+    print("STAGE 2: HATCH DETECTION")
+    print("================================")
+
+    hatch_results = detect(tank_crop, HATCH_MODEL_ID)
+
+    print("\nRaw hatch response:")
+    print(json.dumps(hatch_results, indent=2, default=str))
+
+    for hatch_index, hatch in enumerate(
+        hatch_results.get("predictions", [])
+    ):
+
+        hatch_conf = hatch.get("confidence", 0)
+
+        if hatch_conf < CONFIDENCE:
+            continue
+
+        # Hatch coordinates relative to the tank crop.
+        hx1, hy1, hx2, hy2 = get_box(
+            hatch, tank_crop.shape
+        )
+
+        if hx2 <= hx1 or hy2 <= hy1:
+            continue
+
+        # Convert hatch coordinates to original-image coordinates.
+        gx1 = tx1 + hx1
+        gy1 = ty1 + hy1
+        gx2 = tx1 + hx2
+        gy2 = ty1 + hy2
+
+        hatch_count += 1
+
+        # Draw hatch box in BLUE.
+        cv2.rectangle(
+            output,
+            (gx1, gy1),
+            (gx2, gy2),
+            (255, 0, 0),
+            2
+        )
+
+        cv2.putText(
+            output,
+            f"Hatch {hatch_conf:.2f}",
+            (gx1, max(25, gy1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
+
+        print(
+            f"\nHatch {hatch_index}: "
+            f"confidence={hatch_conf:.3f}, "
+            f"box=({gx1}, {gy1}, {gx2}, {gy2})"
+        )
+
+        # Crop hatch from the tank crop.
+        hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
+
+        # ==================================================
+        # STAGE 3: KEYPOINT DETECTION INSIDE HATCH
+        # ==================================================
+
+        print("\n================================")
+        print("STAGE 3: KEYPOINT DETECTION")
+        print("================================")
+
+        keypoint_requests += 1
+
+        # Run the keypoint model on the hatch crop.
+        keypoint_results = detect(
+            hatch_crop,
+            KEYPOINT_MODEL_ID
+        )
+
+        # Preserve the raw response without assuming its format.
+        record = {
+            "tank_index": tank_index,
+            "hatch_index": hatch_index,
+
+            "tank_confidence": tank_conf,
+            "hatch_confidence": hatch_conf,
+
+            # Hatch location in the original image.
+            "hatch_box_original_image": {
+                "x1": gx1,
+                "y1": gy1,
+                "x2": gx2,
+                "y2": gy2
+            },
+
+            # Dimensions of the image sent to keypoint inference.
+            "hatch_crop_dimensions": {
+                "width": int(hatch_crop.shape[1]),
+                "height": int(hatch_crop.shape[0])
+            },
+
+            # Complete API response, with its original structure.
+            "raw_response": keypoint_results
+        }
+
+        raw_keypoint_data["responses"].append(record)
+
+        print("\nCOMPLETE RAW KEYPOINT RESPONSE:")
+        print(
+            json.dumps(
+                keypoint_results,
+                indent=2,
+                ensure_ascii=False,
+                default=str
+            )
+        )
+
+        # Do not interpret or draw keypoints yet.
+        # First inspect the actual response format.
+
+# ==========================================================
+# SAVE RAW KEYPOINT RESPONSES
+# ==========================================================
+
+with open(RAW_OUTPUT_PATH, "w", encoding="utf-8") as file:
+    json.dump(
+        raw_keypoint_data,
+        file,
+        indent=2,
+        ensure_ascii=False,
+        default=str
+    )
+
+# ==========================================================
+# FINISH
+# ==========================================================
+
+elapsed = time.perf_counter() - start
+
+print("\n================================")
+print("PIPELINE SUMMARY")
+print("================================")
+print(f"Tanks detected: {tank_count}")
+print(f"Hatches detected: {hatch_count}")
+print(f"Keypoint requests: {keypoint_requests}")
+print(f"Processing time: {elapsed:.3f} seconds")
+print(f"Annotated image: {OUTPUT_PATH}")
+print(f"Raw keypoint data: {RAW_OUTPUT_PATH}")
+print("================================")
+
+if not cv2.imwrite(OUTPUT_PATH, output):
+    raise RuntimeError("Could not save annotated image.")
+
+cv2.imshow("Tank, Hatch and Keypoint Pipeline", output)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
