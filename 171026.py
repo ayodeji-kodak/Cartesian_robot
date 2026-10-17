@@ -1,0 +1,197 @@
+
+import cv2
+import time
+import os
+
+from inference_sdk import InferenceHTTPClient
+
+# ==========================================================
+# SETTINGS
+# ==========================================================
+
+CONFIDENCE = 0.80
+
+IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
+OUTPUT_PATH = "tank_detection_result.png"
+
+API_KEY = "iLcT6T8QR9NJT0eh7zbz"
+
+TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
+HATCH_MODEL_ID = "ayodeji-oyelakin/hatch-detection-4-yolo26n-t1"
+
+# ==========================================================
+# CONNECT TO ROBOFLOW
+# ==========================================================
+
+client = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key=API_KEY
+)
+
+def detect(image, model_id):
+    """Run a Roboflow model on an image."""
+    if image is None or image.size == 0:
+        return {"predictions": []}
+
+    return client.infer(image, model_id=model_id)
+
+def get_box(prediction, image_shape):
+    """Convert Roboflow box centre and size to corner coordinates."""
+    height, width = image_shape[:2]
+
+    cx = prediction["x"]
+    cy = prediction["y"]
+    box_width = prediction["width"]
+    box_height = prediction["height"]
+
+    x1 = max(0, int(cx - box_width / 2))
+    y1 = max(0, int(cy - box_height / 2))
+    x2 = min(width, int(cx + box_width / 2))
+    y2 = min(height, int(cy + box_height / 2))
+
+    return x1, y1, x2, y2
+
+# ==========================================================
+# LOAD IMAGE
+# ==========================================================
+
+image = cv2.imread(IMAGE_PATH)
+
+if image is None:
+    raise FileNotFoundError(
+        f"Could not load image: {IMAGE_PATH}"
+    )
+
+output = image.copy()
+
+start = time.perf_counter()
+
+# ==========================================================
+# STAGE 1: DETECT TANK
+# ==========================================================
+
+print("\n==============================")
+print("TANK DETECTION")
+print("==============================")
+
+tank_results = detect(image, TANK_MODEL_ID)
+
+tank_count = 0
+hatch_count = 0
+
+for tank in tank_results.get("predictions", []):
+
+    tank_conf = tank.get("confidence", 0)
+
+    if tank_conf < CONFIDENCE:
+        continue
+
+    tx1, ty1, tx2, ty2 = get_box(tank, image.shape)
+
+    if tx2 <= tx1 or ty2 <= ty1:
+        continue
+
+    tank_count += 1
+
+    # Crop the detected tank from the original image.
+    tank_crop = image[ty1:ty2, tx1:tx2]
+
+    # Draw tank bounding box in GREEN.
+    cv2.rectangle(
+        output,
+        (tx1, ty1),
+        (tx2, ty2),
+        (0, 255, 0),
+        2
+    )
+
+    cv2.putText(
+        output,
+        f"Tank {tank_conf:.2f}",
+        (tx1, max(25, ty1 - 10)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 255, 0),
+        2
+    )
+
+    print(f"\nTank confidence: {tank_conf:.3f}")
+    print(f"Tank box: ({tx1}, {ty1}, {tx2}, {ty2})")
+
+    # ======================================================
+    # STAGE 2: DETECT HATCH INSIDE TANK
+    # ======================================================
+
+    print("Running hatch detection...")
+
+    hatch_results = detect(tank_crop, HATCH_MODEL_ID)
+
+    for hatch in hatch_results.get("predictions", []):
+
+        hatch_conf = hatch.get("confidence", 0)
+
+        if hatch_conf < CONFIDENCE:
+            continue
+
+        # These coordinates are relative to the tank crop.
+        hx1, hy1, hx2, hy2 = get_box(
+            hatch, tank_crop.shape
+        )
+
+        if hx2 <= hx1 or hy2 <= hy1:
+            continue
+
+        # Convert hatch coordinates to original-image coordinates.
+        global_hx1 = tx1 + hx1
+        global_hy1 = ty1 + hy1
+        global_hx2 = tx1 + hx2
+        global_hy2 = ty1 + hy2
+
+        hatch_count += 1
+
+        # Draw hatch bounding box in BLUE.
+        cv2.rectangle(
+            output,
+            (global_hx1, global_hy1),
+            (global_hx2, global_hy2),
+            (255, 0, 0),
+            2
+        )
+
+        cv2.putText(
+            output,
+            f"Hatch {hatch_conf:.2f}",
+            (global_hx1, max(25, global_hy1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
+
+        print(f"Hatch confidence: {hatch_conf:.3f}")
+        print(
+            f"Hatch box: "
+            f"({global_hx1}, {global_hy1}, "
+            f"{global_hx2}, {global_hy2})"
+        )
+
+# ==========================================================
+# FINISH
+# ==========================================================
+
+elapsed = time.perf_counter() - start
+
+print("\n==============================")
+print(f"Tanks detected: {tank_count}")
+print(f"Hatches detected: {hatch_count}")
+print(f"Processing time: {elapsed:.3f} seconds")
+print("==============================")
+
+if not cv2.imwrite(OUTPUT_PATH, output):
+    raise RuntimeError("Could not save output image.")
+
+print(f"Saved result to: {OUTPUT_PATH}")
+
+cv2.imshow("Tank and Hatch Detection", output)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
