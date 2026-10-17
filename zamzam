@@ -1,7 +1,9 @@
 
+
 import cv2
 import time
 import os
+import json
 
 from inference_sdk import InferenceHTTPClient
 
@@ -65,37 +67,26 @@ if image is None:
     )
 
 output = image.copy()
+
 start = time.perf_counter()
 
-tank_count = 0
-hatch_count = 0
-keypoint_requests = 0
-
-# Stores the complete raw response for every hatch crop.
-raw_keypoint_data = {
-    "image_path": IMAGE_PATH,
-    "timestamp": datetime.now().isoformat(),
-    "keypoint_model_id": KEYPOINT_MODEL_ID,
-    "confidence_threshold": CONFIDENCE,
-    "responses": []
-}
+# ADDED: Store raw keypoint responses for later inspection.
+keypoint_raw_results = []
 
 # ==========================================================
 # STAGE 1: DETECT TANK
 # ==========================================================
 
-print("\n================================")
-print("STAGE 1: TANK DETECTION")
-print("================================")
+print("\n==============================")
+print("TANK DETECTION")
+print("==============================")
 
 tank_results = detect(image, TANK_MODEL_ID)
 
-print("\nRaw tank response:")
-print(json.dumps(tank_results, indent=2, default=str))
+tank_count = 0
+hatch_count = 0
 
-for tank_index, tank in enumerate(
-    tank_results.get("predictions", [])
-):
+for tank in tank_results.get("predictions", []):
 
     tank_conf = tank.get("confidence", 0)
 
@@ -109,10 +100,10 @@ for tank_index, tank in enumerate(
 
     tank_count += 1
 
-    # Crop tank from original image.
+    # Crop the detected tank from the original image.
     tank_crop = image[ty1:ty2, tx1:tx2]
 
-    # Draw tank box in GREEN.
+    # Draw tank bounding box in GREEN.
     cv2.rectangle(
         output,
         (tx1, ty1),
@@ -131,35 +122,25 @@ for tank_index, tank in enumerate(
         2
     )
 
-    print(
-        f"\nTank {tank_index}: "
-        f"confidence={tank_conf:.3f}, "
-        f"box=({tx1}, {ty1}, {tx2}, {ty2})"
-    )
+    print(f"\nTank confidence: {tank_conf:.3f}")
+    print(f"Tank box: ({tx1}, {ty1}, {tx2}, {ty2})")
 
     # ======================================================
     # STAGE 2: DETECT HATCH INSIDE TANK
     # ======================================================
 
-    print("\n================================")
-    print("STAGE 2: HATCH DETECTION")
-    print("================================")
+    print("Running hatch detection...")
 
     hatch_results = detect(tank_crop, HATCH_MODEL_ID)
 
-    print("\nRaw hatch response:")
-    print(json.dumps(hatch_results, indent=2, default=str))
-
-    for hatch_index, hatch in enumerate(
-        hatch_results.get("predictions", [])
-    ):
+    for hatch in hatch_results.get("predictions", []):
 
         hatch_conf = hatch.get("confidence", 0)
 
         if hatch_conf < CONFIDENCE:
             continue
 
-        # Hatch coordinates relative to the tank crop.
+        # These coordinates are relative to the tank crop.
         hx1, hy1, hx2, hy2 = get_box(
             hatch, tank_crop.shape
         )
@@ -168,18 +149,18 @@ for tank_index, tank in enumerate(
             continue
 
         # Convert hatch coordinates to original-image coordinates.
-        gx1 = tx1 + hx1
-        gy1 = ty1 + hy1
-        gx2 = tx1 + hx2
-        gy2 = ty1 + hy2
+        global_hx1 = tx1 + hx1
+        global_hy1 = ty1 + hy1
+        global_hx2 = tx1 + hx2
+        global_hy2 = ty1 + hy2
 
         hatch_count += 1
 
-        # Draw hatch box in BLUE.
+        # Draw hatch bounding box in BLUE.
         cv2.rectangle(
             output,
-            (gx1, gy1),
-            (gx2, gy2),
+            (global_hx1, global_hy1),
+            (global_hx2, global_hy2),
             (255, 0, 0),
             2
         )
@@ -187,91 +168,63 @@ for tank_index, tank in enumerate(
         cv2.putText(
             output,
             f"Hatch {hatch_conf:.2f}",
-            (gx1, max(25, gy1 - 10)),
+            (global_hx1, max(25, global_hy1 - 10)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 0, 0),
             2
         )
 
+        print(f"Hatch confidence: {hatch_conf:.3f}")
         print(
-            f"\nHatch {hatch_index}: "
-            f"confidence={hatch_conf:.3f}, "
-            f"box=({gx1}, {gy1}, {gx2}, {gy2})"
+            f"Hatch box: "
+            f"({global_hx1}, {global_hy1}, "
+            f"{global_hx2}, {global_hy2})"
         )
-
-        # Crop hatch from the tank crop.
-        hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
 
         # ==================================================
         # STAGE 3: KEYPOINT DETECTION INSIDE HATCH
         # ==================================================
 
-        print("\n================================")
-        print("STAGE 3: KEYPOINT DETECTION")
-        print("================================")
+        print("Running keypoint detection inside hatch...")
 
-        keypoint_requests += 1
+        # Crop the hatch from the tank crop.
+        hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
 
-        # Run the keypoint model on the hatch crop.
-        keypoint_results = detect(
-            hatch_crop,
-            KEYPOINT_MODEL_ID
-        )
+        # Send hatch crop to the keypoint model.
+        hole_results = detect(hatch_crop, HOLE_MODEL_ID)
 
-        # Preserve the raw response without assuming its format.
-        record = {
-            "tank_index": tank_index,
-            "hatch_index": hatch_index,
-
-            "tank_confidence": tank_conf,
-            "hatch_confidence": hatch_conf,
-
-            # Hatch location in the original image.
-            "hatch_box_original_image": {
-                "x1": gx1,
-                "y1": gy1,
-                "x2": gx2,
-                "y2": gy2
-            },
-
-            # Dimensions of the image sent to keypoint inference.
-            "hatch_crop_dimensions": {
-                "width": int(hatch_crop.shape[1]),
-                "height": int(hatch_crop.shape[0])
-            },
-
-            # Complete API response, with its original structure.
-            "raw_response": keypoint_results
+        # Preserve the complete raw response without assuming
+        # a particular keypoint output structure.
+        raw_record = {
+            "tank_number": tank_count,
+            "hatch_number": hatch_count,
+            "tank_box_xyxy": [tx1, ty1, tx2, ty2],
+            "hatch_box_xyxy": [
+                global_hx1,
+                global_hy1,
+                global_hx2,
+                global_hy2
+            ],
+            "keypoint_model_id": HOLE_MODEL_ID,
+            "hatch_crop_shape": list(hatch_crop.shape),
+            "raw_response": hole_results
         }
 
-        raw_keypoint_data["responses"].append(record)
+        keypoint_raw_results.append(raw_record)
 
-        print("\nCOMPLETE RAW KEYPOINT RESPONSE:")
-        print(
-            json.dumps(
-                keypoint_results,
-                indent=2,
-                ensure_ascii=False,
-                default=str
-            )
-        )
-
-        # Do not interpret or draw keypoints yet.
-        # First inspect the actual response format.
+        print("\n========== RAW KEYPOINT RESPONSE ==========")
+        print(json.dumps(hole_results, indent=2))
+        print("===========================================\n")
 
 # ==========================================================
 # SAVE RAW KEYPOINT RESPONSES
 # ==========================================================
 
-with open(RAW_OUTPUT_PATH, "w", encoding="utf-8") as file:
-    json.dump(
-        raw_keypoint_data,
-        file,
-        indent=2,
-        ensure_ascii=False,
-        default=str
-    )
+with open(KEYPOINT_OUTPUT_PATH, "w", encoding="utf-8") as file:
+    json.dump(keypoint_raw_results, file, indent=2)
+
+print(f"Raw keypoint data saved to: {KEYPOINT_OUTPUT_PATH}")
 
 # ==========================================================
 # FINISH
@@ -279,20 +232,18 @@ with open(RAW_OUTPUT_PATH, "w", encoding="utf-8") as file:
 
 elapsed = time.perf_counter() - start
 
-print("\n================================")
-print("PIPELINE SUMMARY")
-print("================================")
+print("\n==============================")
 print(f"Tanks detected: {tank_count}")
 print(f"Hatches detected: {hatch_count}")
-print(f"Keypoint requests: {keypoint_requests}")
+print(f"Keypoint requests completed: {len(keypoint_raw_results)}")
 print(f"Processing time: {elapsed:.3f} seconds")
-print(f"Annotated image: {OUTPUT_PATH}")
-print(f"Raw keypoint data: {RAW_OUTPUT_PATH}")
-print("================================")
+print("==============================")
 
 if not cv2.imwrite(OUTPUT_PATH, output):
-    raise RuntimeError("Could not save annotated image.")
+    raise RuntimeError("Could not save output image.")
 
-cv2.imshow("Tank, Hatch and Keypoint Pipeline", output)
+print(f"Saved result to: {OUTPUT_PATH}")
+
+cv2.imshow("Tank and Hatch Detection", output)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
