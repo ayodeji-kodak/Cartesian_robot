@@ -252,14 +252,14 @@ for tank in tank_results.get("predictions", []):
             for prediction in predictions:
 
                 # Optional: skip low-confidence detections.
-                detection_conf = prediction.get("confidence", 0)
+                #detection_conf = prediction.get("confidence", 0)
 
-                if detection_conf < CONFIDENCE:
-                    print(
-                        "Skipping keypoint detection with confidence "
-                        f"{detection_conf:.3f}"
-                    )
-                    continue
+                #if detection_conf < CONFIDENCE:
+                #    print(
+                #        "Skipping keypoint detection with confidence "
+                #        f"{detection_conf:.3f}"
+                #    )
+                #    continue
 
                 keypoints = prediction.get("keypoints", [])
 
