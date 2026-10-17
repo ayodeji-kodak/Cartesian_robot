@@ -1,6 +1,9 @@
 
 import cv2
 import time
+import os
+import json
+import pprint
 
 from inference_sdk import InferenceHTTPClient
 
@@ -12,10 +15,13 @@ CONFIDENCE = 0.80
 
 IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
 OUTPUT_PATH = "tank_detection_result.png"
+KEYPOINT_OUTPUT_PATH = "keypoint_raw_results.json"
 
 API_KEY = "iLcT6T8QR9NJT0eh7zbz"
 
 TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
+HATCH_MODEL_ID = "ayodeji-oyelakin/hatch-detection-5-rfdetr-medium-t1"
+HOLE_MODEL_ID = "ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1"
 
 # ==========================================================
 # CONNECT TO ROBOFLOW
@@ -25,6 +31,29 @@ client = InferenceHTTPClient(
     api_url="https://serverless.roboflow.com",
     api_key=API_KEY
 )
+
+def detect(image, model_id):
+    """Run a Roboflow model on an image."""
+    if image is None or image.size == 0:
+        return {"predictions": []}
+
+    return client.infer(image, model_id=model_id)
+
+def get_box(prediction, image_shape):
+    """Convert Roboflow box centre and size to corner coordinates."""
+    height, width = image_shape[:2]
+
+    cx = prediction["x"]
+    cy = prediction["y"]
+    box_width = prediction["width"]
+    box_height = prediction["height"]
+
+    x1 = max(0, int(cx - box_width / 2))
+    y1 = max(0, int(cy - box_height / 2))
+    x2 = min(width, int(cx + box_width / 2))
+    y2 = min(height, int(cy + box_height / 2))
+
+    return x1, y1, x2, y2
 
 # ==========================================================
 # LOAD IMAGE
@@ -39,69 +68,182 @@ if image is None:
 
 output = image.copy()
 
-# ==========================================================
-# TANK DETECTION
-# ==========================================================
-
 start = time.perf_counter()
 
-results = client.infer(
-    image,
-    model_id=TANK_MODEL_ID
-)
+# ADDED: Store raw keypoint responses for later inspection.
+keypoint_raw_results = []
+
+# ==========================================================
+# STAGE 1: DETECT TANK
+# ==========================================================
 
 print("\n==============================")
-print("TANK WAGON DETECTION")
+print("TANK DETECTION")
 print("==============================")
 
-detections = 0
+tank_results = detect(image, TANK_MODEL_ID)
 
-for tank in results.get("predictions", []):
+tank_count = 0
+hatch_count = 0
 
-    confidence = tank.get("confidence", 0)
+for tank in tank_results.get("predictions", []):
 
-    if confidence < CONFIDENCE:
+    tank_conf = tank.get("confidence", 0)
+
+    if tank_conf < CONFIDENCE:
         continue
 
-    # Roboflow returns the box centre and dimensions.
-    cx = tank["x"]
-    cy = tank["y"]
-    width = tank["width"]
-    height = tank["height"]
+    tx1, ty1, tx2, ty2 = get_box(tank, image.shape)
 
-    # Convert to bounding-box corner coordinates.
-    x1 = max(0, int(cx - width / 2))
-    y1 = max(0, int(cy - height / 2))
-    x2 = min(image.shape[1], int(cx + width / 2))
-    y2 = min(image.shape[0], int(cy + height / 2))
-
-    if x2 <= x1 or y2 <= y1:
+    if tx2 <= tx1 or ty2 <= ty1:
         continue
 
-    detections += 1
+    tank_count += 1
 
-    # Draw the tank bounding box.
+    # Crop the detected tank from the original image.
+    tank_crop = image[ty1:ty2, tx1:tx2]
+
+    # Draw tank bounding box in GREEN.
     cv2.rectangle(
         output,
-        (x1, y1),
-        (x2, y2),
+        (tx1, ty1),
+        (tx2, ty2),
         (0, 255, 0),
         2
     )
 
-    # Label the detection.
     cv2.putText(
         output,
-        f"Tank {confidence:.2f}",
-        (x1, max(25, y1 - 10)),
+        f"Tank {tank_conf:.2f}",
+        (tx1, max(25, ty1 - 10)),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.8,
         (0, 255, 0),
         2
     )
 
-    print(f"Tank confidence: {confidence:.3f}")
-    print(f"Bounding box: ({x1}, {y1}, {x2}, {y2})")
+    print(f"\nTank confidence: {tank_conf:.3f}")
+    print(f"Tank box: ({tx1}, {ty1}, {tx2}, {ty2})")
+
+    # ======================================================
+    # STAGE 2: DETECT HATCH INSIDE TANK
+    # ======================================================
+
+    print("Running hatch detection...")
+
+    hatch_results = detect(tank_crop, HATCH_MODEL_ID)
+
+    for hatch in hatch_results.get("predictions", []):
+
+        hatch_conf = hatch.get("confidence", 0)
+
+        if hatch_conf < CONFIDENCE:
+            continue
+
+        # These coordinates are relative to the tank crop.
+        hx1, hy1, hx2, hy2 = get_box(
+            hatch, tank_crop.shape
+        )
+
+        if hx2 <= hx1 or hy2 <= hy1:
+            continue
+
+        # Convert hatch coordinates to original-image coordinates.
+        global_hx1 = tx1 + hx1
+        global_hy1 = ty1 + hy1
+        global_hx2 = tx1 + hx2
+        global_hy2 = ty1 + hy2
+
+        hatch_count += 1
+
+        # Draw hatch bounding box in BLUE.
+        cv2.rectangle(
+            output,
+            (global_hx1, global_hy1),
+            (global_hx2, global_hy2),
+            (255, 0, 0),
+            2
+        )
+
+        cv2.putText(
+            output,
+            f"Hatch {hatch_conf:.2f}",
+            (global_hx1, max(25, global_hy1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
+
+        print(f"Hatch confidence: {hatch_conf:.3f}")
+        print(
+            f"Hatch box: "
+            f"({global_hx1}, {global_hy1}, "
+            f"{global_hx2}, {global_hy2})"
+        )
+
+        # ==================================================
+        # STAGE 3: KEYPOINT DETECTION INSIDE HATCH
+        # ==================================================
+
+        print("\n" + "=" * 60)
+        print("STAGE 3: KEYPOINT DETECTION")
+        print("=" * 60)
+
+        # Crop the hatch from the tank crop.
+        hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
+
+        print(f"Hatch crop dimensions: {hatch_crop.shape}")
+        print(f"Keypoint model: {HOLE_MODEL_ID}")
+        print("Sending hatch crop to Roboflow...")
+
+        try:
+            # Send hatch crop to the keypoint model.
+            hole_results = detect(tank_crop, HOLE_MODEL_ID)
+
+            print("\n========== COMPLETE RAW API RESPONSE ==========")
+            pprint.pprint(hole_results, sort_dicts=False, width=120)
+            print("================================================\n")
+
+            # Preserve the complete response and its associated coordinates.
+            raw_record = {
+                "tank_number": tank_count,
+                "hatch_number": hatch_count,
+                "tank_box_xyxy": [tx1, ty1, tx2, ty2],
+                "hatch_box_xyxy": [
+                    global_hx1,
+                    global_hy1,
+                    global_hx2,
+                    global_hy2
+                ],
+                "keypoint_model_id": HOLE_MODEL_ID,
+                "hatch_crop_shape": list(hatch_crop.shape),
+                "raw_response": hole_results
+            }
+
+            keypoint_raw_results.append(raw_record)
+
+            # Print each top-level response field separately.
+            if isinstance(hole_results, dict):
+                print("\n========== RESPONSE FIELDS ==========")
+
+                for field, value in hole_results.items():
+                    print(f"\nFIELD: {field}")
+                    pprint.pprint(value, sort_dicts=False, width=120)
+
+                print("\n======================================")
+
+            else:
+                print("Response is not a dictionary.")
+                print("Raw response type:", type(hole_results))
+                print("Raw response value:", repr(hole_results))
+
+        except Exception as error:
+            print("\nKEYPOINT INFERENCE FAILED")
+            print("Error type:", type(error).__name__)
+            print("Error message:", str(error))
+            print("======================================")
+
 
 # ==========================================================
 # FINISH
@@ -110,15 +252,17 @@ for tank in results.get("predictions", []):
 elapsed = time.perf_counter() - start
 
 print("\n==============================")
-print(f"Tanks detected: {detections}")
+print(f"Tanks detected: {tank_count}")
+print(f"Hatches detected: {hatch_count}")
+print(f"Keypoint requests completed: {len(keypoint_raw_results)}")
 print(f"Processing time: {elapsed:.3f} seconds")
 print("==============================")
 
 if not cv2.imwrite(OUTPUT_PATH, output):
     raise RuntimeError("Could not save output image.")
 
-print(f"Result saved to: {OUTPUT_PATH}")
+print(f"Saved result to: {OUTPUT_PATH}")
 
-cv2.imshow("Tank Wagon Detection", output)
+cv2.imshow("Tank and Hatch Detection", output)
 cv2.waitKey(0)
 cv2.destroyAllWindows()

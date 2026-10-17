@@ -1,0 +1,31 @@
+========== RESPONSE FIELDS ==========
+
+FIELD: inference_id
+'e2049b8f-9cd3-4116-b8c2-64d53a747184'
+
+FIELD: time
+0.07002216298133135
+
+FIELD: resolved_model
+{'model_id': 'ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1',
+ 'model_package_id': '5362b72bfb9f01d2e0b8cba2048d932c',
+ 'backend': 'onnx',
+ 'quantization': 'fp32'}
+
+FIELD: image
+{'width': 309, 'height': 589}
+
+FIELD: predictions
+[{'x': 174.5,
+  'y': 244.0,
+  'width': 41.0,
+  'height': 42.0,
+  'confidence': 0.4311276376247406,
+  'class': 'hole-detection',
+  'class_id': 0,
+  'detection_id': 'f5cbbca2-2a43-4e22-be1d-c4da245c2ad9',
+  'keypoints': [{'x': 176.0, 'y': 242.0, 'confidence': 0.6693398952484131, 'class_id': 0, 'class': 'center'}]}]
+
+======================================
+Skipping keypoint detection with confidence 0.431
+Raw keypoint data saved to: keypoint_raw_results.json
