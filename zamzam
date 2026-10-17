@@ -1,5 +1,4 @@
 
-
 import cv2
 import time
 import os
@@ -15,13 +14,13 @@ CONFIDENCE = 0.80
 
 IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
 OUTPUT_PATH = "tank_detection_result.png"
+KEYPOINT_OUTPUT_PATH = "keypoint_raw_results.json"
 
 API_KEY = "iLcT6T8QR9NJT0eh7zbz"
 
 TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
 HATCH_MODEL_ID = "ayodeji-oyelakin/hatch-detection-5-rfdetr-medium-t1"
-KEYPOINT_MODEL_ID = "ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1"
-
+HOLE_MODEL_ID = "ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1"
 
 # ==========================================================
 # CONNECT TO ROBOFLOW
