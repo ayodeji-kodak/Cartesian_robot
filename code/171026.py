@@ -2,6 +2,8 @@
 import cv2
 import time
 import os
+import json
+import pprint
 
 from inference_sdk import InferenceHTTPClient
 
@@ -13,11 +15,13 @@ CONFIDENCE = 0.80
 
 IMAGE_PATH = "/home/ayo/Desktop/Cartesian_robot/code/test.png"
 OUTPUT_PATH = "tank_detection_result.png"
+KEYPOINT_OUTPUT_PATH = "keypoint_raw_results.json"
 
 API_KEY = "iLcT6T8QR9NJT0eh7zbz"
 
 TANK_MODEL_ID = "ayodeji-oyelakin/rail-tanker-detection-1-rfdetr-medium-t1"
 HATCH_MODEL_ID = "ayodeji-oyelakin/hatch-detection-5-rfdetr-medium-t1"
+HOLE_MODEL_ID = "ayodeji-oyelakin/hole_detection-1awug-5-rfdetr-keypoint-preview-t1"
 
 # ==========================================================
 # CONNECT TO ROBOFLOW
@@ -65,6 +69,9 @@ if image is None:
 output = image.copy()
 
 start = time.perf_counter()
+
+# ADDED: Store raw keypoint responses for later inspection.
+keypoint_raw_results = []
 
 # ==========================================================
 # STAGE 1: DETECT TANK
@@ -175,6 +182,69 @@ for tank in tank_results.get("predictions", []):
             f"{global_hx2}, {global_hy2})"
         )
 
+        # ==================================================
+        # STAGE 3: KEYPOINT DETECTION INSIDE HATCH
+        # ==================================================
+
+        print("\n" + "=" * 60)
+        print("STAGE 3: KEYPOINT DETECTION")
+        print("=" * 60)
+
+        # Crop the hatch from the tank crop.
+        hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
+
+        print(f"Hatch crop dimensions: {hatch_crop.shape}")
+        print(f"Keypoint model: {HOLE_MODEL_ID}")
+        print("Sending hatch crop to Roboflow...")
+
+        try:
+            # Send hatch crop to the keypoint model.
+            hole_results = detect(tank_crop, HOLE_MODEL_ID)
+
+            print("\n========== COMPLETE RAW API RESPONSE ==========")
+            pprint.pprint(hole_results, sort_dicts=False, width=120)
+            print("================================================\n")
+
+            # Preserve the complete response and its associated coordinates.
+            raw_record = {
+                "tank_number": tank_count,
+                "hatch_number": hatch_count,
+                "tank_box_xyxy": [tx1, ty1, tx2, ty2],
+                "hatch_box_xyxy": [
+                    global_hx1,
+                    global_hy1,
+                    global_hx2,
+                    global_hy2
+                ],
+                "keypoint_model_id": HOLE_MODEL_ID,
+                "hatch_crop_shape": list(hatch_crop.shape),
+                "raw_response": hole_results
+            }
+
+            keypoint_raw_results.append(raw_record)
+
+            # Print each top-level response field separately.
+            if isinstance(hole_results, dict):
+                print("\n========== RESPONSE FIELDS ==========")
+
+                for field, value in hole_results.items():
+                    print(f"\nFIELD: {field}")
+                    pprint.pprint(value, sort_dicts=False, width=120)
+
+                print("\n======================================")
+
+            else:
+                print("Response is not a dictionary.")
+                print("Raw response type:", type(hole_results))
+                print("Raw response value:", repr(hole_results))
+
+        except Exception as error:
+            print("\nKEYPOINT INFERENCE FAILED")
+            print("Error type:", type(error).__name__)
+            print("Error message:", str(error))
+            print("======================================")
+
+
 # ==========================================================
 # FINISH
 # ==========================================================
@@ -184,6 +254,7 @@ elapsed = time.perf_counter() - start
 print("\n==============================")
 print(f"Tanks detected: {tank_count}")
 print(f"Hatches detected: {hatch_count}")
+print(f"Keypoint requests completed: {len(keypoint_raw_results)}")
 print(f"Processing time: {elapsed:.3f} seconds")
 print("==============================")
 
