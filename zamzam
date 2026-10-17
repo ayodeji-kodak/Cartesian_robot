@@ -185,45 +185,64 @@ for tank in tank_results.get("predictions", []):
         # STAGE 3: KEYPOINT DETECTION INSIDE HATCH
         # ==================================================
 
-        print("Running keypoint detection inside hatch...")
+        print("\n" + "=" * 60)
+        print("STAGE 3: KEYPOINT DETECTION")
+        print("=" * 60)
 
         # Crop the hatch from the tank crop.
         hatch_crop = tank_crop[hy1:hy2, hx1:hx2]
 
-        # Send hatch crop to the keypoint model.
-        hole_results = detect(hatch_crop, HOLE_MODEL_ID)
+        print(f"Hatch crop dimensions: {hatch_crop.shape}")
+        print(f"Keypoint model: {HOLE_MODEL_ID}")
+        print("Sending hatch crop to Roboflow...")
 
-        # Preserve the complete raw response without assuming
-        # a particular keypoint output structure.
-        raw_record = {
-            "tank_number": tank_count,
-            "hatch_number": hatch_count,
-            "tank_box_xyxy": [tx1, ty1, tx2, ty2],
-            "hatch_box_xyxy": [
-                global_hx1,
-                global_hy1,
-                global_hx2,
-                global_hy2
-            ],
-            "keypoint_model_id": HOLE_MODEL_ID,
-            "hatch_crop_shape": list(hatch_crop.shape),
-            "raw_response": hole_results
-        }
+        try:
+            # Send hatch crop to the keypoint model.
+            hole_results = detect(hatch_crop, HOLE_MODEL_ID)
 
-        keypoint_raw_results.append(raw_record)
+            print("\n========== COMPLETE RAW API RESPONSE ==========")
+            pprint.pprint(hole_results, sort_dicts=False, width=120)
+            print("================================================\n")
 
-        print("\n========== RAW KEYPOINT RESPONSE ==========")
-        print(json.dumps(hole_results, indent=2))
-        print("===========================================\n")
+            # Preserve the complete response and its associated coordinates.
+            raw_record = {
+                "tank_number": tank_count,
+                "hatch_number": hatch_count,
+                "tank_box_xyxy": [tx1, ty1, tx2, ty2],
+                "hatch_box_xyxy": [
+                    global_hx1,
+                    global_hy1,
+                    global_hx2,
+                    global_hy2
+                ],
+                "keypoint_model_id": HOLE_MODEL_ID,
+                "hatch_crop_shape": list(hatch_crop.shape),
+                "raw_response": hole_results
+            }
 
-# ==========================================================
-# SAVE RAW KEYPOINT RESPONSES
-# ==========================================================
+            keypoint_raw_results.append(raw_record)
 
-with open(KEYPOINT_OUTPUT_PATH, "w", encoding="utf-8") as file:
-    json.dump(keypoint_raw_results, file, indent=2)
+            # Print each top-level response field separately.
+            if isinstance(hole_results, dict):
+                print("\n========== RESPONSE FIELDS ==========")
 
-print(f"Raw keypoint data saved to: {KEYPOINT_OUTPUT_PATH}")
+                for field, value in hole_results.items():
+                    print(f"\nFIELD: {field}")
+                    pprint.pprint(value, sort_dicts=False, width=120)
+
+                print("\n======================================")
+
+            else:
+                print("Response is not a dictionary.")
+                print("Raw response type:", type(hole_results))
+                print("Raw response value:", repr(hole_results))
+
+        except Exception as error:
+            print("\nKEYPOINT INFERENCE FAILED")
+            print("Error type:", type(error).__name__)
+            print("Error message:", str(error))
+            print("======================================")
+
 
 # ==========================================================
 # FINISH
